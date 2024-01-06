@@ -1,4 +1,5 @@
 import heapq
+import numpy as np
 
 
 class Generator:
@@ -64,7 +65,24 @@ class Logger:
         num = 0
 
         for log in self.logs:
-            if log.queue_id == queue_id and log.event_description in ['ENTER_SYSTEM', 'EXIT_SYSTEM', 'EXIT_SYSTEM_FORCED']:
+            if log.queue_id == queue_id and log.event_description in ['ENTER_QUEUE', 'EXIT_PROCESSOR', 'EXIT_SYSTEM_FORCED']:
+                time = log.time - last_time
+                last_time = log.time
+                sum += time * (num == number)
+                if log.event_description == 'ENTER_QUEUE':
+                    num += 1
+                else:
+                    num -= 1
+
+        return sum / end_time
+
+    def calculate_stationary_distribution_global(self, end_time, number):
+        sum = 0
+        last_time = 0
+        num = 0
+
+        for log in self.logs:
+            if log.event_description in ['ENTER_SYSTEM', 'EXIT_SYSTEM', 'EXIT_SYSTEM_FORCED']:
                 time = log.time - last_time
                 last_time = log.time
                 sum += time * (num == number)
@@ -80,12 +98,25 @@ class Logger:
         jobs_lost = 0
 
         for log in self.logs:
-            if log.queue_id == queue_id and log.event_description == 'ENTER_SYSTEM':
+            if log.queue_id == queue_id and log.event_description == 'ENTER_QUEUE':
                 jobs_entered += 1
             elif log.queue_id == queue_id and log.event_description == 'EXIT_SYSTEM_FORCED':
                 jobs_lost += 1
 
         return jobs_lost / jobs_entered
+
+    def calculate_probability_of_loosing_a_job_global(self):
+        jobs_entered = 0
+        jobs_lost = 0
+
+        for log in self.logs:
+            if log.event_description == 'ENTER_SYSTEM':
+                jobs_entered += 1
+            elif log.event_description == 'EXIT_SYSTEM_FORCED':
+                jobs_lost += 1
+
+        return jobs_lost / jobs_entered
+
 
     def calculate_probability_of_a_job_waiting(self, queue_id, end_time, s):
         sum = 0
@@ -233,11 +264,12 @@ class QueueNetwork:
 
             match event.event_description:
                 case 'ENTER_QUEUE':
-                    job = self.create_job()
-                    new_event = Event(job.job_id, event.queue_id, 'ENTER_QUEUE', time + queue.generator.generator_function())
-                    if new_event.time < end_time:
-                        heapq.heappush(event_queue, Event(job.job_id, queue.queue_id, 'ENTER_SYSTEM', new_event.time))
-                        heapq.heappush(event_queue, new_event)
+                    if queue.generator is not None:
+                        job = self.create_job()
+                        new_event = Event(job.job_id, event.queue_id, 'ENTER_QUEUE', time + queue.generator.generator_function())
+                        if new_event.time < end_time:
+                            heapq.heappush(event_queue, Event(job.job_id, queue.queue_id, 'ENTER_SYSTEM', new_event.time))
+                            heapq.heappush(event_queue, new_event)
 
                     if queue.processor.number_of_jobs < queue.processor.number_of_processors:
                         new_event = Event(event.job_id, event.queue_id, 'ENTER_PROCESSOR', time)
@@ -265,7 +297,15 @@ class QueueNetwork:
                     else:
                         heapq.heappush(event_queue, Event(event.job_id, event.queue_id, 'RELEASE_FROM_BUFFER', event.time))
                     queue.processor.jobs.remove(event.job_id)
-                    heapq.heappush(event_queue, Event(event.job_id, event.queue_id, 'EXIT_SYSTEM', event.time))
+
+                    transition_probabilities = self.transitions[queue.queue_id]
+                    choices = list(transition_probabilities.keys())
+                    weights = list(transition_probabilities.values())
+                    next_queue_id = np.random.choice(choices, p=weights)
+                    if next_queue_id == -1:
+                        heapq.heappush(event_queue, Event(event.job_id, event.queue_id, 'EXIT_SYSTEM', event.time))
+                    else:
+                        heapq.heappush(event_queue, Event(event.job_id, next_queue_id, 'ENTER_QUEUE', event.time))
 
                 case 'ENTER_BUFFER':
                     queue.buffer.jobs.append(event.job_id)
